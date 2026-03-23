@@ -334,11 +334,80 @@ sudo python3 lte_bridge.py
 
 ---
 
-## Java Server Integration
+## Java Drone Server Configuration
 
-The LTE bridge exposes a local HTTP API on port 8099. The Java drone server sends data over LTE by POSTing to localhost — no direct LTE knowledge needed in Java code.
+The Java drone server needs a config change to know which drones to forward to over LTE. The LTE bridge handles all the networking — the Java server just POSTs to `localhost:8099`.
 
-### Send to specific drone
+### Server Config
+
+Add `lteDroneTargets` to `deployment/server_config.json`:
+
+**Pi 1 (drone_1) — forwards to Pi 2:**
+```json
+{
+  "ipAddress": "0.0.0.0",
+  "portNumber": 80,
+  "actualIpAddress": "192.168.40.20",
+  "otherDronesUrls": "",
+  "lteDroneTargets": ["drone_2"]
+}
+```
+
+**Pi 2 (drone_2) — forwards to Pi 1:**
+```json
+{
+  "ipAddress": "0.0.0.0",
+  "portNumber": 80,
+  "actualIpAddress": "192.168.40.21",
+  "otherDronesUrls": "",
+  "lteDroneTargets": ["drone_1"]
+}
+```
+
+### Config Fields
+
+| Field | Description |
+|-------|-------------|
+| `ipAddress` | Bind address for Java server (`0.0.0.0` is typical) |
+| `portNumber` | Java server port (usually `80`) |
+| `actualIpAddress` | This drone's local IP, used in message sender info |
+| `otherDronesUrls` | Mesh/radio HTTP forwarding targets (existing field) |
+| `lteDroneTargets` | LTE forwarding targets — list of drone IDs matching MQTT bridge config (new field) |
+
+### What Gets Forwarded Over LTE
+
+With `lteDroneTargets` configured, the Java server automatically forwards:
+- Sensor data received via `POST /` → forwarded to `/messenger` on target drones
+- Drone GPS relay messages → forwarded over LTE
+- Messages sent via `/messenger/send` → forwarded over LTE
+
+If `lteDroneTargets` is empty or missing, LTE forwarding is disabled and the server behaves as before.
+
+### LTE + Mesh Together
+
+You can use both mesh radio and LTE simultaneously:
+```json
+{
+  "otherDronesUrls": "http://192.168.60.21:80",
+  "lteDroneTargets": ["drone_2"]
+}
+```
+
+This forwards data over both paths. The receiving drone deduplicates automatically.
+
+### LTE-Only Setup (No Mesh Radio)
+
+Set `otherDronesUrls` to empty and use only `lteDroneTargets`:
+```json
+{
+  "otherDronesUrls": "",
+  "lteDroneTargets": ["drone_2"]
+}
+```
+
+### How It Works Under the Hood
+
+The Java server POSTs to the local LTE bridge at `http://localhost:8099/lte/send`:
 
 ```java
 try {
@@ -362,17 +431,16 @@ try {
 }
 ```
 
-### Broadcast to all drones
+The bridge publishes to MQTT, EC2 routes it, the other drone's bridge receives it and POSTs to the local Java server's `/messenger` endpoint. No Java changes needed on the receiving side.
 
+### Broadcast to All Drones
+
+If `lteDroneTargets` is empty, the server falls back to the broadcast endpoint:
 ```java
+// POST to http://localhost:8099/lte/broadcast
 String body = "{\"payload\":" + JSONObject.quote(messageJson)
     + ",\"endpoint\":\"/messenger\"}";
-// POST to http://localhost:8099/lte/broadcast
 ```
-
-### Receiving
-
-No Java changes needed for receiving. The bridge automatically POSTs incoming messages to the local Java server's existing `/messenger` endpoint in the format it already expects.
 
 ---
 
